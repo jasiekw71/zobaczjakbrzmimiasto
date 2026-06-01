@@ -91,7 +91,6 @@
         <p id="welcome-text">Zobacz, jak brzmi miasto.</p>
         <button id="start-btn">S&#322;ucham</button>
     </div>
-    <button id="save-btn">Zapisz obraz</button>
 
     <script>
     let mic, fft;
@@ -104,6 +103,12 @@
     var TERRAIN_ROWS = 90;
     var TERRAIN_PTS = 128;
 
+    // 3D rotation
+    var rotX = 0.75;
+    var rotY = 0.5;
+    var isDragging = false;
+    var dragSX, dragSY, dragRX, dragRY;
+
     const DAYS_PL = [
         'NIEDZIELA', 'PONIEDZIAŁEK', 'WTOREK',
         'ŚRODA', 'CZWARTEK', 'PIĄTEK', 'SOBOTA'
@@ -113,11 +118,43 @@
         const params = new URLSearchParams(window.location.search);
         seriesNum = params.get('n') || '';
 
-        createCanvas(windowWidth, windowHeight);
+        var cnv = createCanvas(windowWidth, windowHeight);
         textFont('JetBrains Mono');
 
         document.getElementById('start-btn').addEventListener('click', initAudio);
-        document.getElementById('save-btn').addEventListener('click', saveImg);
+
+        // touch / mouse rotation
+        cnv.elt.addEventListener('touchstart', function(e) {
+            if (!isRunning) return;
+            e.preventDefault();
+            var t = e.touches[0];
+            dragSX = t.clientX; dragSY = t.clientY;
+            dragRX = rotX; dragRY = rotY;
+            isDragging = true;
+        }, { passive: false });
+        cnv.elt.addEventListener('touchmove', function(e) {
+            if (!isDragging) return;
+            e.preventDefault();
+            var t = e.touches[0];
+            rotY = dragRY + (t.clientX - dragSX) * 0.006;
+            rotX = dragRX + (t.clientY - dragSY) * 0.006;
+            rotX = Math.max(0.15, Math.min(1.45, rotX));
+        }, { passive: false });
+        cnv.elt.addEventListener('touchend', function() { isDragging = false; });
+
+        cnv.elt.addEventListener('mousedown', function(e) {
+            if (!isRunning) return;
+            dragSX = e.clientX; dragSY = e.clientY;
+            dragRX = rotX; dragRY = rotY;
+            isDragging = true;
+        });
+        window.addEventListener('mousemove', function(e) {
+            if (!isDragging) return;
+            rotY = dragRY + (e.clientX - dragSX) * 0.006;
+            rotX = dragRX + (e.clientY - dragSY) * 0.006;
+            rotX = Math.max(0.15, Math.min(1.45, rotX));
+        });
+        window.addEventListener('mouseup', function() { isDragging = false; });
     }
 
     function initAudio() {
@@ -131,7 +168,6 @@
                 fft.setInput(mic);
                 isRunning = true;
                 document.getElementById('welcome').style.display = 'none';
-                document.getElementById('save-btn').style.display = 'block';
             }, function() {
                 btn.textContent = 'Brak dostępu do mikrofonu';
                 btn.style.borderColor = 'rgba(255,255,255,0.3)';
@@ -165,7 +201,6 @@
 
         updateTerrain(spectrum);
         renderTerrain(fg, bg);
-        drawHUD(level, fg);
 
         prevLevel = level;
     }
@@ -197,40 +232,58 @@
 
     function renderTerrain(fg, bg) {
         var pts = TERRAIN_PTS;
+        var rows = specHistory.length;
+        if (rows === 0) return;
 
-        // 4 corners — isometric tilted plane
-        var flX = width * 0.06,  flY = height * 0.74;
-        var frX = width * 0.68,  frY = height * 0.84;
-        var blX = width * 0.32,  blY = height * 0.24;
-        var brX = width * 0.94,  brY = height * 0.34;
+        var cX = Math.cos(rotX), sX = Math.sin(rotX);
+        var cY = Math.cos(rotY), sY = Math.sin(rotY);
+        var sc = min(width, height) * 0.38;
+        var cx = width * 0.5;
+        var cy = height * 0.48;
 
-        for (var row = specHistory.length - 1; row >= 0; row--) {
+        // sort rows by depth after rotation
+        var sorted = [];
+        for (var r = 0; r < rows; r++) {
+            var tz = lerp(-1, 1, r / TERRAIN_ROWS);
+            var dz = tz * cY * cX;
+            sorted.push({ idx: r, dz: dz });
+        }
+        sorted.sort(function(a, b) { return b.dz - a.dz; });
+
+        for (var ri = 0; ri < sorted.length; ri++) {
+            var row = sorted[ri].idx;
             var data = specHistory[row];
             var t = row / TERRAIN_ROWS;
+            var z3 = lerp(-1, 1, t);
+            var amp = lerp(0.55, 0.12, t);
+            var alpha = lerp(210, 45, t);
 
-            var lx = lerp(flX, blX, t);
-            var ly = lerp(flY, blY, t);
-            var rx = lerp(frX, brX, t);
-            var ry = lerp(frY, brY, t);
-
-            var ampH = lerp(height * 0.32, height * 0.08, t);
-            var alpha = lerp(200, 50, t);
-
-            var vx = [], vy = [];
+            var vx = [], vy = [], bvy = [];
             for (var i = 0; i < pts; i++) {
-                var s = i / (pts - 1);
-                var bx = lerp(lx, rx, s);
-                var by = lerp(ly, ry, s);
-                vx.push(bx);
-                vy.push(by - data[i] * ampH);
+                var x3 = lerp(-1, 1, i / (pts - 1));
+                var y3 = -data[i] * amp;
+
+                // rotate Y then X
+                var xr = x3 * cY - z3 * sY;
+                var zr = x3 * sY + z3 * cY;
+                var yr = y3 * cX - zr * sX;
+                var zr2 = y3 * sX + zr * cX;
+
+                var p = 1 + zr2 * 0.15;
+                vx.push(cx + xr * sc / p);
+                vy.push(cy + yr * sc / p);
+
+                // base (y3=0)
+                var byr = -zr * sX;
+                bvy.push(cy + byr * sc / p);
             }
 
             fill(bg);
             noStroke();
             beginShape();
             for (var i = 0; i < pts; i++) vertex(vx[i], vy[i]);
-            vertex(rx, ry + 3);
-            vertex(lx, ly + 3);
+            vertex(vx[pts - 1], bvy[pts - 1] + 4);
+            vertex(vx[0], bvy[0] + 4);
             endShape(CLOSE);
 
             noFill();
