@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#000000">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Zobacz, jak brzmi miasto.</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/addons/p5.sound.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            width: 100%; height: 100%;
+            overflow: hidden;
+            background: #000;
+            font-family: 'JetBrains Mono', monospace;
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+            overscroll-behavior: none;
+            -webkit-touch-callout: none;
+        }
+        canvas { display: block; }
+
+        #welcome {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+            z-index: 10;
+        }
+        #welcome-text {
+            color: #fff;
+            font-size: 14px;
+            letter-spacing: 2px;
+            margin-bottom: 48px;
+            text-align: center;
+            padding: 0 24px;
+            line-height: 1.6;
+        }
+        #start-btn {
+            background: #000;
+            color: #fff;
+            border: 0.5px solid #fff;
+            padding: 14px 40px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            letter-spacing: 3px;
+            cursor: pointer;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+            transition: background 0.08s, color 0.08s;
+        }
+        #start-btn:active {
+            background: #fff;
+            color: #000;
+        }
+        #save-btn {
+            position: fixed;
+            bottom: 58px;
+            left: 16px;
+            background: none;
+            border: 0.5px solid rgba(255,255,255,0.2);
+            color: rgba(255,255,255,0.3);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 8px;
+            letter-spacing: 1px;
+            padding: 4px 8px;
+            cursor: pointer;
+            z-index: 5;
+            display: none;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #save-btn:active {
+            color: rgba(255,255,255,0.8);
+            border-color: rgba(255,255,255,0.6);
+        }
+    </style>
+</head>
+<body>
+    <div id="welcome">
+        <p id="welcome-text">Zobacz, jak brzmi miasto.</p>
+        <button id="start-btn">S&#322;ucham</button>
+    </div>
+    <button id="save-btn">Zapisz obraz</button>
+
+    <script>
+    let mic, fft;
+    let isRunning = false;
+    let seriesNum;
+    let prevLevel = 0;
+    let glitchUntil = 0;
+    let smoothLevel = 0;
+    let specHistory = [];
+    var TERRAIN_ROWS = 90;
+    var TERRAIN_PTS = 128;
+
+    const DAYS_PL = [
+        'NIEDZIELA', 'PONIEDZIAŁEK', 'WTOREK',
+        'ŚRODA', 'CZWARTEK', 'PIĄTEK', 'SOBOTA'
+    ];
+
+    function setup() {
+        const params = new URLSearchParams(window.location.search);
+        seriesNum = params.get('n') || '';
+
+        createCanvas(windowWidth, windowHeight);
+        textFont('JetBrains Mono');
+
+        document.getElementById('start-btn').addEventListener('click', initAudio);
+        document.getElementById('save-btn').addEventListener('click', saveImg);
+    }
+
+    function initAudio() {
+        var btn = document.getElementById('start-btn');
+        btn.textContent = '...';
+
+        userStartAudio().then(function() {
+            mic = new p5.AudioIn();
+            mic.start(function() {
+                fft = new p5.FFT(0.82, 1024);
+                fft.setInput(mic);
+                isRunning = true;
+                document.getElementById('welcome').style.display = 'none';
+                document.getElementById('save-btn').style.display = 'block';
+            }, function() {
+                btn.textContent = 'Brak dostępu do mikrofonu';
+                btn.style.borderColor = 'rgba(255,255,255,0.3)';
+                btn.style.color = 'rgba(255,255,255,0.4)';
+            });
+        }).catch(function() {
+            btn.textContent = 'Brak dostępu do mikrofonu';
+            btn.style.borderColor = 'rgba(255,255,255,0.3)';
+            btn.style.color = 'rgba(255,255,255,0.4)';
+        });
+    }
+
+    // ── draw ──────────────────────────────────────────
+
+    function draw() {
+        if (!isRunning) { background(0); return; }
+
+        var spectrum = fft.analyze();
+        var level = mic.getLevel();
+        smoothLevel = lerp(smoothLevel, level, 0.15);
+
+        // peak → glitch
+        if (level > 0.12 && level > prevLevel * 2.5 && prevLevel > 0.005) {
+            glitchUntil = millis() + 80;
+        }
+        var isGlitch = millis() < glitchUntil;
+        var bg = isGlitch ? 255 : 0;
+        var fg = isGlitch ? 0 : 255;
+
+        background(bg);
+
+        updateTerrain(spectrum);
+        renderTerrain(fg, bg);
+        drawHUD(level, fg);
+
+        prevLevel = level;
+    }
+
+    // ── terrain: cascading FFT spectrogram ─────────
+
+    function smoothArr(a, passes) {
+        var r = a.slice();
+        for (var p = 0; p < passes; p++) {
+            var t = r.slice();
+            for (var i = 1; i < t.length - 1; i++) {
+                r[i] = (t[i - 1] + t[i] * 2 + t[i + 1]) / 4;
+            }
+        }
+        return r;
+    }
+
+    function updateTerrain(spectrum) {
+        var pts = TERRAIN_PTS;
+        var down = [];
+        for (var i = 0; i < pts; i++) {
+            var idx = floor(map(i, 0, pts, 0, spectrum.length));
+            down.push(spectrum[idx] / 255);
+        }
+        down = smoothArr(down, 3);
+        specHistory.unshift(down);
+        if (specHistory.length > TERRAIN_ROWS) specHistory.pop();
+    }
+
+    function renderTerrain(fg, bg) {
+        var pts = TERRAIN_PTS;
+
+        // 4 corners — isometric tilted plane
+        var flX = width * 0.06,  flY = height * 0.74;
+        var frX = width * 0.68,  frY = height * 0.84;
+        var blX = width * 0.32,  blY = height * 0.24;
+        var brX = width * 0.94,  brY = height * 0.34;
+
+        for (var row = specHistory.length - 1; row >= 0; row--) {
+            var data = specHistory[row];
+            var t = row / TERRAIN_ROWS;
+
+            var lx = lerp(flX, blX, t);
+            var ly = lerp(flY, blY, t);
+            var rx = lerp(frX, brX, t);
+            var ry = lerp(frY, brY, t);
+
+            var ampH = lerp(height * 0.32, height * 0.08, t);
+            var alpha = lerp(200, 50, t);
+
+            var vx = [], vy = [];
+            for (var i = 0; i < pts; i++) {
+                var s = i / (pts - 1);
+                var bx = lerp(lx, rx, s);
+                var by = lerp(ly, ry, s);
+                vx.push(bx);
+                vy.push(by - data[i] * ampH);
+            }
+
+            fill(bg);
+            noStroke();
+            beginShape();
+            for (var i = 0; i < pts; i++) vertex(vx[i], vy[i]);
+            vertex(rx, ry + 3);
+            vertex(lx, ly + 3);
+            endShape(CLOSE);
+
+            noFill();
+            stroke(fg, alpha);
+            strokeWeight(0.5);
+            beginShape();
+            for (var i = 0; i < pts; i++) vertex(vx[i], vy[i]);
+            endShape();
+        }
+    }
+
+    // ── HUD labels ───────────────────────────────────
+
+    function drawHUD(level, fg) {
+        var pad = 16;
+        var now = new Date();
+
+        fill(fg);
+        noStroke();
+        textSize(10);
+
+        // top-left: REC · HH:MM
+        var hh = String(now.getHours()).padStart(2, '0');
+        var mm = String(now.getMinutes()).padStart(2, '0');
+        textAlign(LEFT, TOP);
+        text('REC · ' + hh + ':' + mm, pad, pad);
+
+        // top-right: N°XX (only if set)
+        if (seriesNum) {
+            textAlign(RIGHT, TOP);
+            text('N°' + seriesNum, width - pad, pad);
+        }
+
+        // bottom-left: dB
+        var db = level > 0.0001 ? 20 * Math.log10(level) : -60;
+        db = Math.max(Math.round(db), -60);
+        textAlign(LEFT, BOTTOM);
+        text(db + ' dB', pad, height - 36);
+
+        // separator
+        stroke(fg, 45);
+        strokeWeight(0.5);
+        line(pad, height - 28, width - pad, height - 28);
+
+        // date
+        noStroke();
+        fill(fg, 70);
+        textSize(8);
+        var dd = String(now.getDate()).padStart(2, '0');
+        var mo = String(now.getMonth() + 1).padStart(2, '0');
+        var yyyy = now.getFullYear();
+        var day = DAYS_PL[now.getDay()];
+        textAlign(LEFT, BOTTOM);
+        text(dd + '.' + mo + '.' + yyyy + ' · ' + day, pad, height - pad);
+    }
+
+    // ── save ─────────────────────────────────────────
+
+    function saveImg() {
+        var isGlitch = millis() < glitchUntil;
+        var bgc = isGlitch ? 255 : 0;
+        var fgc = isGlitch ? 0 : 255;
+        background(bgc);
+        renderTerrain(fgc, bgc);
+
+        var now = new Date();
+        var dd = String(now.getDate()).padStart(2, '0');
+        var mo = String(now.getMonth() + 1).padStart(2, '0');
+        saveCanvas('miasto_' + dd + mo + now.getFullYear(), 'png');
+    }
+
+    // ── resize ───────────────────────────────────────
+
+    function windowResized() {
+        resizeCanvas(windowWidth, windowHeight);
+    }
+    </script>
+</body>
+</html>
