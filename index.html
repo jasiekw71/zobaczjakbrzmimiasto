@@ -189,13 +189,8 @@
         var level = mic.getLevel();
         smoothLevel = lerp(smoothLevel, level, 0.15);
 
-        // peak → glitch
-        if (level > 0.12 && level > prevLevel * 2.5 && prevLevel > 0.005) {
-            glitchUntil = millis() + 80;
-        }
-        var isGlitch = millis() < glitchUntil;
-        var bg = isGlitch ? 255 : 0;
-        var fg = isGlitch ? 0 : 255;
+        var bg = 0;
+        var fg = 255;
 
         background(bg);
 
@@ -255,7 +250,7 @@
             var data = specHistory[row];
             var t = row / TERRAIN_ROWS;
             var z3 = lerp(-1, 1, t);
-            var amp = lerp(0.55, 0.12, t);
+            var amp = lerp(1.1, 0.25, t);
             var alpha = lerp(210, 45, t);
 
             var vx = [], vy = [], bvy = [];
